@@ -10,9 +10,11 @@ const clear_textures_key = raylib.KEY_BACKSPACE;
 const toggle_fullscreen_key = raylib.KEY_F;
 const zoom_increment = 0.1;
 const vector2_zero = raylib.Vector2Zero();
-const rotation_increment = 15;
+const rotation_increment = 5;
 
 pub fn main() error{OutOfMemory}!void {
+    var frame_counter: u64 = 0;
+
     raylib.SetConfigFlags(raylib.FLAG_WINDOW_RESIZABLE | raylib.FLAG_VSYNC_HINT | raylib.FLAG_WINDOW_HIGHDPI);
     raylib.InitWindow(800, 600, title);
     defer raylib.CloseWindow();
@@ -52,15 +54,14 @@ pub fn main() error{OutOfMemory}!void {
         for (pictures.items) |*pic| {
             const collides_mouse = pic.collides(mouse_position);
             if (raylib.IsKeyPressed(clear_textures_key)) {
-                raylib.UnloadTexture(pic.texture);
-                allocator.destroy(&pic);
+                pic.deinit(allocator);
                 pictures.clearRetainingCapacity();
                 continue;
             }
             if (mouse_wheel_move != 0) {
                 if (raylib.IsKeyDown(raylib.KEY_LEFT_SHIFT)) {
                     if ((!rotating) and collides_mouse) {
-                        pic.rotation_target += mouse_wheel_move * rotation_increment;
+                        pic.rot_target += mouse_wheel_move * rotation_increment;
                         rotating = true;
                     }
                 } else if ((!scaling) and collides_mouse) {
@@ -79,14 +80,15 @@ pub fn main() error{OutOfMemory}!void {
                 texture_filter = @mod(texture_filter + 1, 3);
                 raylib.SetTextureFilter(pic.texture, texture_filter);
             }
-            pic.move(frame_time);
+            pic.move(frame_time, mouse_position);
         }
 
         if (raylib.IsFileDropped()) {
             try dropFile(allocator, &pictures, texture_filter);
         }
 
-        draw(camera, pictures);
+        draw(camera, pictures, frame_counter);
+        frame_counter += 1;
     }
 }
 
@@ -104,22 +106,18 @@ pub fn loadFile(allocator: std.mem.Allocator, pictures: *PictureArrayList, filte
         .y = @intToFloat(f32, raylib.GetScreenHeight()),
     };
 
-    var pic = (try allocator.create(Picture)).*;
-    pic = .{
-        .texture = texture,
-        .pos = .{
-            .x = screen.x / 2,
-            .y = screen.y / 2,
-        },
-        .size = .{
-            .x = @intToFloat(f32, texture.width),
-            .y = @intToFloat(f32, texture.height),
-        },
-        .rotation = 0,
-        .rotation_target = 0,
-        .z = @intToFloat(f32, pictures.items.len),
-    };
-    pic.rescale(std.math.min(screen.x / pic.size.x, screen.y / pic.size.y));
+    var pic = (try Picture.init(allocator, texture)).*;
+
+    pic.z = @intToFloat(f32, pictures.items.len);
+
+    pic.setScale(std.math.min(screen.x / pic.size.x, screen.y / pic.size.y));
+    pic.rescale(pic.scale);
+    const scaled_size = pic.toRect();
+    // std.debug.print("{any}\n{any}\n", .{ scaled_size, screen });
+    pic.pos.x = 0.5 * (screen.x - scaled_size.width);
+    pic.pos.y = 0.5 * (screen.y - scaled_size.height);
+    // std.debug.print("{any}\n{any}\n", .{ pic.toRect(), screen });
+    // false or @panic("");
 
     try pictures.append(pic);
 }
@@ -133,7 +131,7 @@ pub fn dropFile(allocator: std.mem.Allocator, pictures: *PictureArrayList, filte
     }
 }
 
-pub fn draw(camera: raylib.Camera2D, pictures: PictureArrayList) void {
+pub fn draw(camera: raylib.Camera2D, pictures: PictureArrayList, counter: u64) void {
     raylib.BeginDrawing();
     defer raylib.EndDrawing();
 
@@ -144,6 +142,7 @@ pub fn draw(camera: raylib.Camera2D, pictures: PictureArrayList) void {
 
     std.sort.sort(Picture, pictures.items, Picture.SortPicArgs{}, Picture.sortPic);
     for (pictures.items) |pic| {
-        pic.draw();
+        pic.draw(counter);
     }
+    // raylib.DrawText("WOLOLO", 0, 0, 100, raylib.BLACK);
 }
