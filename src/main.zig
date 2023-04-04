@@ -1,7 +1,8 @@
 const std = @import("std");
 const raylib = @import("gen/raylib.zig");
+const Picture = @import("picture.zig").Picture;
 
-const Texture2DArrayList = std.ArrayList(raylib.Texture2D);
+const PictureArrayList = std.ArrayList(Picture);
 
 const title = "Codotaku Image Viewer";
 const cycle_filter_key = raylib.KEY_P;
@@ -10,8 +11,6 @@ const toggle_fullscreen_key = raylib.KEY_F;
 const zoom_increment = 0.1;
 const vector2_zero = raylib.Vector2Zero();
 const rotation_increment = 15;
-const rotation_duration = 0.2;
-const zoom_duration = 0.2;
 
 fn focusCamera(camera: *raylib.Camera2D, screen_position: raylib.Vector2) void {
     camera.*.target = raylib.GetScreenToWorld2D(screen_position, camera.*);
@@ -19,7 +18,7 @@ fn focusCamera(camera: *raylib.Camera2D, screen_position: raylib.Vector2) void {
 }
 
 pub fn main() error{OutOfMemory}!void {
-    raylib.SetConfigFlags(raylib.FLAG_WINDOW_RESIZABLE | raylib.FLAG_VSYNC_HINT);
+    raylib.SetConfigFlags(raylib.FLAG_WINDOW_RESIZABLE | raylib.FLAG_VSYNC_HINT | raylib.FLAG_WINDOW_HIGHDPI);
     raylib.InitWindow(800, 600, title);
     defer raylib.CloseWindow();
 
@@ -27,17 +26,14 @@ pub fn main() error{OutOfMemory}!void {
     defer arena.deinit();
     var allocator = arena.allocator();
 
-    var textures = Texture2DArrayList.init(allocator);
-    defer {
-        for (textures.items) |texture| {
-            raylib.UnloadTexture(texture);
-        }
-        textures.deinit();
-    }
+    var pictures = PictureArrayList.init(allocator);
 
     var texture_filter = raylib.TEXTURE_FILTER_TRILINEAR;
-    var target_zoom: f32 = 1;
-    var target_rotation: f32 = 0;
+    if (std.os.argv.len >= 2) {
+        for (std.os.argv[1..]) |arg| {
+            try loadFile(allocator, &pictures, texture_filter, arg);
+        }
+    }
 
     var camera = raylib.Camera2D{
         .offset = vector2_zero,
@@ -52,79 +48,131 @@ pub fn main() error{OutOfMemory}!void {
         }
 
         if (raylib.IsKeyPressed(clear_textures_key)) {
-            for (textures.items) |texture| {
-                raylib.UnloadTexture(texture);
+            for (pictures.items) |pic| {
+                raylib.UnloadTexture(pic.texture);
+                allocator.destroy(&pic);
             }
-            textures.clearRetainingCapacity();
+            pictures.clearRetainingCapacity();
         }
 
         const mouse_wheel_move = raylib.GetMouseWheelMove();
         const mouse_position = raylib.GetMousePosition();
 
         if (mouse_wheel_move != 0) {
+            std.sort.sort(Picture, pictures.items, Picture.SortPicArgs{ .reverse = true }, Picture.sortPic);
             if (raylib.IsKeyDown(raylib.KEY_LEFT_SHIFT)) {
-                target_rotation += mouse_wheel_move * rotation_increment;
-                focusCamera(&camera, mouse_position);
+                for (pictures.items) |*pic| {
+                    if (pic.collides(mouse_position)) {
+                        pic.rotation_target += mouse_wheel_move * rotation_increment;
+                        break;
+                    }
+                }
             } else {
-                target_zoom = std.math.max(target_zoom + mouse_wheel_move * zoom_increment, zoom_increment);
-                focusCamera(&camera, mouse_position);
+                for (pictures.items) |*pic| {
+                    if (pic.collides(mouse_position)) {
+                        pic.rescale(std.math.max(pic.scale_target + mouse_wheel_move * zoom_increment, zoom_increment));
+                        break;
+                    }
+                }
             }
         }
 
-        if (raylib.IsMouseButtonDown(raylib.MOUSE_MIDDLE_BUTTON)) {
-            focusCamera(&camera, mouse_position);
-            target_zoom = 1;
+        if (raylib.IsMouseButtonPressed(raylib.MOUSE_LEFT_BUTTON)) {
+            if (raylib.IsKeyDown(raylib.KEY_LEFT_SHIFT)) {
+                if (pictures.popOrNull()) |pic| {
+                    raylib.UnloadTexture(pic.texture);
+                    allocator.destroy(&pic);
+                    pictures.clearRetainingCapacity();
+                }
+            }
         }
-
-        const frame_time = raylib.GetFrameTime();
-        camera.zoom *= std.math.pow(f32, target_zoom / camera.zoom, frame_time / zoom_duration);
-        camera.rotation = raylib.Lerp(camera.rotation, target_rotation, frame_time / rotation_duration);
-
         if (raylib.IsMouseButtonDown(raylib.MOUSE_LEFT_BUTTON)) {
-            const translation = raylib.Vector2Scale(raylib.GetMouseDelta(), -1 / target_zoom);
-            camera.target = raylib.Vector2Add(camera.target, raylib.Vector2Rotate(translation, -camera.rotation * raylib.DEG2RAD));
+            std.sort.sort(Picture, pictures.items, Picture.SortPicArgs{ .reverse = true }, Picture.sortPic);
+            for (pictures.items) |*pic| {
+                if (pic.collides(mouse_position)) {
+                    const mouse_delta = raylib.GetMouseDelta();
+                    pic.pos.x = pic.pos.x + mouse_delta.x;
+                    pic.pos.y = pic.pos.y + mouse_delta.y;
+                    break;
+                }
+            }
+            // const translation = raylib.Vector2Scale(raylib.GetMouseDelta(), -1 / target_zoom);
+            // camera.target = raylib.Vector2Add(camera.target, raylib.Vector2Rotate(translation, -camera.rotation * raylib.DEG2RAD));
         }
 
         if (raylib.IsKeyPressed(cycle_filter_key)) {
             texture_filter = @mod(texture_filter + 1, 3);
-            for (textures.items) |texture| {
-                raylib.SetTextureFilter(texture, texture_filter);
+            for (pictures.items) |pic| {
+                raylib.SetTextureFilter(pic.texture, texture_filter);
             }
         }
 
         if (raylib.IsFileDropped()) {
-            const dropped_files = raylib.LoadDroppedFiles();
-            defer raylib.UnloadDroppedFiles(dropped_files);
-
-            for (dropped_files.paths[0..dropped_files.count]) |dropped_file_path| {
-                var texture = raylib.LoadTexture(dropped_file_path);
-                if (texture.id == 0) continue;
-                raylib.GenTextureMipmaps(&texture);
-                if (texture.mipmaps == 1) {
-                    std.debug.print("{s}", .{"Mipmaps failed to generate!\n"});
-                }
-                raylib.SetTextureFilter(texture, texture_filter);
-                try textures.append(texture);
-            }
+            try dropFile(allocator, &pictures, texture_filter);
         }
 
-        { // Drawing
-            raylib.BeginDrawing();
-            defer raylib.EndDrawing();
-
-            raylib.ClearBackground(raylib.WHITE);
-
-            var x: i32 = 0;
-
-            { // Camera 2D
-                raylib.BeginMode2D(camera);
-                defer raylib.EndMode2D();
-
-                for (textures.items) |texture| {
-                    raylib.DrawTexture(texture, x, 0, raylib.WHITE);
-                    x += texture.width;
-                }
-            }
+        const frame_time = raylib.GetFrameTime();
+        for (pictures.items) |*pic| {
+            pic.move(frame_time);
         }
+
+        draw(camera, pictures);
+    }
+}
+
+pub fn loadFile(allocator: std.mem.Allocator, pictures: *PictureArrayList, filter: c_int, file_path: [*c]const u8) error{OutOfMemory}!void {
+    var texture = raylib.LoadTexture(file_path);
+    if (texture.id == 0) return;
+    raylib.GenTextureMipmaps(&texture);
+    if (texture.mipmaps == 1) {
+        std.debug.print("{s}", .{"Mipmaps failed to generate!\n"});
+    }
+    raylib.SetTextureFilter(texture, filter);
+
+    const screen = raylib.Vector2{
+        .x = @intToFloat(f32, raylib.GetScreenWidth()),
+        .y = @intToFloat(f32, raylib.GetScreenHeight()),
+    };
+
+    var pic = (try allocator.create(Picture)).*;
+    pic = .{
+        .texture = texture,
+        .pos = .{
+            .x = screen.x / 2,
+            .y = screen.y / 2,
+        },
+        .size = .{
+            .x = @intToFloat(f32, texture.width),
+            .y = @intToFloat(f32, texture.height),
+        },
+        .rotation = 0,
+        .rotation_target = 0,
+    };
+    pic.rescale(std.math.min(screen.x / pic.size.x, screen.y / pic.size.y));
+
+    try pictures.append(pic);
+}
+
+pub fn dropFile(allocator: std.mem.Allocator, pictures: *PictureArrayList, filter: c_int) error{OutOfMemory}!void {
+    const dropped_files = raylib.LoadDroppedFiles();
+    defer raylib.UnloadDroppedFiles(dropped_files);
+
+    for (dropped_files.paths[0..dropped_files.count]) |dropped_file_path| {
+        try loadFile(allocator, pictures, filter, dropped_file_path);
+    }
+}
+
+pub fn draw(camera: raylib.Camera2D, pictures: PictureArrayList) void {
+    raylib.BeginDrawing();
+    defer raylib.EndDrawing();
+
+    raylib.ClearBackground(raylib.BLUE);
+
+    raylib.BeginMode2D(camera);
+    defer raylib.EndMode2D();
+
+    std.sort.sort(Picture, pictures.items, Picture.SortPicArgs{}, Picture.sortPic);
+    for (pictures.items) |pic| {
+        pic.draw();
     }
 }
