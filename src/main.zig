@@ -12,11 +12,6 @@ const zoom_increment = 0.1;
 const vector2_zero = raylib.Vector2Zero();
 const rotation_increment = 15;
 
-fn focusCamera(camera: *raylib.Camera2D, screen_position: raylib.Vector2) void {
-    camera.*.target = raylib.GetScreenToWorld2D(screen_position, camera.*);
-    camera.*.offset = screen_position;
-}
-
 pub fn main() error{OutOfMemory}!void {
     raylib.SetConfigFlags(raylib.FLAG_WINDOW_RESIZABLE | raylib.FLAG_VSYNC_HINT | raylib.FLAG_WINDOW_HIGHDPI);
     raylib.InitWindow(800, 600, title);
@@ -41,79 +36,54 @@ pub fn main() error{OutOfMemory}!void {
         .rotation = 0,
         .zoom = 1,
     };
+    const frame_time = raylib.GetFrameTime();
 
     while (!raylib.WindowShouldClose()) {
+        var dragging: bool = false;
+        var rotating: bool = false;
+        var scaling: bool = false;
         if (raylib.IsKeyPressed(toggle_fullscreen_key)) {
             raylib.ToggleFullscreen();
         }
-
-        if (raylib.IsKeyPressed(clear_textures_key)) {
-            for (pictures.items) |pic| {
-                raylib.UnloadTexture(pic.texture);
-                allocator.destroy(&pic);
-            }
-            pictures.clearRetainingCapacity();
-        }
-
         const mouse_wheel_move = raylib.GetMouseWheelMove();
         const mouse_position = raylib.GetMousePosition();
 
-        if (mouse_wheel_move != 0) {
-            std.sort.sort(Picture, pictures.items, Picture.SortPicArgs{ .reverse = true }, Picture.sortPic);
-            if (raylib.IsKeyDown(raylib.KEY_LEFT_SHIFT)) {
-                for (pictures.items) |*pic| {
-                    if (pic.collides(mouse_position)) {
+        std.sort.sort(Picture, pictures.items, Picture.SortPicArgs{ .reverse = true }, Picture.sortPic);
+        for (pictures.items) |*pic| {
+            const collides_mouse = pic.collides(mouse_position);
+            if (raylib.IsKeyPressed(clear_textures_key)) {
+                raylib.UnloadTexture(pic.texture);
+                allocator.destroy(&pic);
+                pictures.clearRetainingCapacity();
+                continue;
+            }
+            if (mouse_wheel_move != 0) {
+                if (raylib.IsKeyDown(raylib.KEY_LEFT_SHIFT)) {
+                    if ((!rotating) and collides_mouse) {
                         pic.rotation_target += mouse_wheel_move * rotation_increment;
-                        break;
+                        rotating = true;
                     }
-                }
-            } else {
-                for (pictures.items) |*pic| {
-                    if (pic.collides(mouse_position)) {
-                        pic.rescale(std.math.max(pic.scale_target + mouse_wheel_move * zoom_increment, zoom_increment));
-                        break;
-                    }
+                } else if ((!scaling) and collides_mouse) {
+                    pic.rescale(pic.scale_target + mouse_wheel_move * zoom_increment);
+                    scaling = true;
                 }
             }
-        }
-
-        if (raylib.IsMouseButtonPressed(raylib.MOUSE_LEFT_BUTTON)) {
-            if (raylib.IsKeyDown(raylib.KEY_LEFT_SHIFT)) {
-                if (pictures.popOrNull()) |pic| {
-                    raylib.UnloadTexture(pic.texture);
-                    allocator.destroy(&pic);
-                    pictures.clearRetainingCapacity();
-                }
-            }
-        }
-        if (raylib.IsMouseButtonDown(raylib.MOUSE_LEFT_BUTTON)) {
-            std.sort.sort(Picture, pictures.items, Picture.SortPicArgs{ .reverse = true }, Picture.sortPic);
-            for (pictures.items) |*pic| {
-                if (pic.collides(mouse_position)) {
+            if (raylib.IsMouseButtonDown(raylib.MOUSE_LEFT_BUTTON)) {
+                if ((!dragging) and collides_mouse) {
                     const mouse_delta = raylib.GetMouseDelta();
-                    pic.pos.x = pic.pos.x + mouse_delta.x;
-                    pic.pos.y = pic.pos.y + mouse_delta.y;
-                    break;
+                    pic.drag(mouse_delta);
+                    dragging = true;
                 }
             }
-            // const translation = raylib.Vector2Scale(raylib.GetMouseDelta(), -1 / target_zoom);
-            // camera.target = raylib.Vector2Add(camera.target, raylib.Vector2Rotate(translation, -camera.rotation * raylib.DEG2RAD));
-        }
-
-        if (raylib.IsKeyPressed(cycle_filter_key)) {
-            texture_filter = @mod(texture_filter + 1, 3);
-            for (pictures.items) |pic| {
+            if (raylib.IsKeyPressed(cycle_filter_key)) {
+                texture_filter = @mod(texture_filter + 1, 3);
                 raylib.SetTextureFilter(pic.texture, texture_filter);
             }
+            pic.move(frame_time);
         }
 
         if (raylib.IsFileDropped()) {
             try dropFile(allocator, &pictures, texture_filter);
-        }
-
-        const frame_time = raylib.GetFrameTime();
-        for (pictures.items) |*pic| {
-            pic.move(frame_time);
         }
 
         draw(camera, pictures);
@@ -147,6 +117,7 @@ pub fn loadFile(allocator: std.mem.Allocator, pictures: *PictureArrayList, filte
         },
         .rotation = 0,
         .rotation_target = 0,
+        .z = @intToFloat(f32, pictures.items.len),
     };
     pic.rescale(std.math.min(screen.x / pic.size.x, screen.y / pic.size.y));
 

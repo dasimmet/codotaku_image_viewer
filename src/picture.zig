@@ -1,8 +1,8 @@
 pub const Picture = @This();
 const raylib = @import("gen/raylib.zig");
 const std = @import("std");
-const scale_duration = 1000000;
-const scale_delta = 0.02;
+const scale_duration = 1000000000000000000;
+const scale_delta = 0.002;
 const rot_duration = 0.1;
 const rot_delta = 0.02;
 
@@ -62,6 +62,11 @@ pub fn draw(self: Picture) void {
         // std.debug.print("{any} {any}\n", .{ self.rotation, self.scale });
     }
     raylib.DrawTexturePro(self.texture, src, rect, origin, self.rotation, raylib.WHITE);
+}
+
+pub fn drag(self: *Picture, mouse: raylib.Vector2) void {
+    self.pos.x += mouse.x;
+    self.pos.y += mouse.y;
 }
 
 pub fn move(self: *Picture, time: f32) void {
